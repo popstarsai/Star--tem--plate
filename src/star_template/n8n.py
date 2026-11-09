@@ -1,8 +1,9 @@
-"""Public template-catalog adapter. Not the authenticated n8n instance API."""
+"""Public n8n workflow discovery with documented and newer endpoint fallbacks."""
 from __future__ import annotations
 import json
 import os
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from star_template.catalog import Catalog, normalize_n8n
@@ -19,11 +20,28 @@ class N8nProvider:
 
     def fetch_page(self, page: int, rows: int):
         params = urllib.parse.urlencode({"page": page, "rows": rows})
-        request = urllib.request.Request(
+        # Both /api/templates/search and /templates/search appear in n8n
+        # catalog documentation/ecosystem clients. n8n itself also calls
+        # n8n.io/api/product-api/workflows/search in its workflow-sdk tests.
+        urls = [
+            self.base_url + "/api/templates/search?" + params,
             self.base_url + "/templates/search?" + params,
-            headers={"Accept": "application/json", "User-Agent": "Star-Tem-Plate/0.1"})
-        with urllib.request.urlopen(request, timeout=25) as result:
-            response = json.load(result)
+        ]
+        if self.base_url == "https://api.n8n.io":
+            urls.append("https://n8n.io/api/product-api/workflows/search?" + params)
+        response = None
+        for index, url in enumerate(urls):
+            req = urllib.request.Request(
+                url, headers={"Accept": "application/json",
+                              "User-Agent": "Star-Tem-Plate/0.1"})
+            try:
+                with urllib.request.urlopen(req, timeout=25) as result:
+                    response = json.load(result)
+                break
+            except urllib.error.HTTPError as exc:
+                # Do not bypass an actual rate limit, 401, or server failure.
+                if exc.code not in (403, 404) or index == len(urls) - 1:
+                    raise
         root = response.get("data", response) if isinstance(response, dict) else response
         if isinstance(root, list):
             workflows, total = root, None
